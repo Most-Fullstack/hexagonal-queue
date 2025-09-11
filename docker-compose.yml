@@ -1,0 +1,240 @@
+version: "3.8"
+
+services:
+  # MongoDB Database
+  # mongodb:
+  #   image: mongo:7.0
+  #   container_name: hexagonal-queue-mongo
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - mongodb_data:/data/db
+  #   environment:
+  #     MONGO_INITDB_ROOT_USERNAME: admin
+  #     MONGO_INITDB_ROOT_PASSWORD: password123
+  #     MONGO_INITDB_DATABASE: wallet_db
+  #   command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--auth"]
+  #   networks:
+  #     - hexagonal-queue-network
+  #   restart: unless-stopped
+
+  mongodb:
+    image: mongo:7.0
+    container_name: hexagonal-queue-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    command: >
+      bash -c "
+        echo 'Starting MongoDB without auth to initialize replica set...'
+        mongod --replSet rs0 --bind_ip_all --port 27017 &
+        sleep 10
+        echo 'Initializing replica set...'
+        mongosh --eval '
+        rs.initiate({
+          _id: \"rs0\",
+          members: [{_id: 0, host: \"localhost:27017\"}]
+        });
+        '
+        sleep 5
+        echo 'Creating admin user...'
+        mongosh admin --eval '
+          db.createUser({
+            user: \"admin\",
+            pwd: \"password123\", 
+            roles: [\"root\"]
+          });
+        '
+        echo 'Restarting with auth...'
+        pkill mongod
+        sleep 3
+        mongod --replSet rs0 --bind_ip_all --auth --port 27017
+      "
+    networks:
+      - hexagonal-queue-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--username", "admin", "--password", "password123", "--authenticationDatabase", "admin", "--eval", "db.adminCommand('hello').isWritablePrimary"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: hexagonal-queue-rabbitmq
+    ports:
+      - "5672:5672" # AMQP port
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password123
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - hexagonal-queue-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Apache Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: hexagonal-queue-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+    networks:
+      - hexagonal-queue-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: hexagonal-queue-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "19092:19092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - hexagonal-queue-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "kafka-broker-api-versions --bootstrap-server localhost:9092",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: hexagonal-queue-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass password123
+    volumes:
+      - redis_data:/data
+    networks:
+      - hexagonal-queue-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "password123", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Wallet Service (for testing)
+  wallet-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hexagonal-queue-wallet
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mongodb
+      - rabbitmq
+      - kafka
+      - redis
+    environment:
+      # Server config
+      SERVER_PORT: 8080
+      SERVER_HOST: 0.0.0.0
+
+      # Database config
+      MONGODB_URI: mongodb://admin:password123@mongodb:27017/wallet_db?authSource=admin
+      MONGODB_DATABASE: wallet_db
+
+      # Queue provider (change this to test different providers)
+      QUEUE_PROVIDER: rabbitmq
+
+      # RabbitMQ config
+      RABBITMQ_URI: amqp://admin:password123@rabbitmq:5672/
+      RABBITMQ_QUEUE_NAME: wallet_queue
+
+      # Kafka config
+      KAFKA_BROKERS: kafka:19092
+      KAFKA_TOPIC: wallet-transactions
+      KAFKA_CONSUMER_GROUP: wallet-service
+
+      # Redis config
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: password123
+      REDIS_DB: 0
+
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: text
+
+      # Environment
+      GO_ENV: development
+    networks:
+      - hexagonal-queue-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Redis Commander (Redis GUI)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: hexagonal-queue-redis-gui
+    ports:
+      - "8081:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:password123
+    depends_on:
+      - redis
+    networks:
+      - hexagonal-queue-network
+    profiles: ["gui"]
+
+  # Optional: Kafka UI
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: hexagonal-queue-kafka-ui
+    ports:
+      - "8082:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+    depends_on:
+      - kafka
+    networks:
+      - hexagonal-queue-network
+    profiles: ["gui"]
+
+volumes:
+  mongodb_data:
+  rabbitmq_data:
+  kafka_data:
+  zookeeper_data:
+  zookeeper_logs:
+  redis_data:
+
+networks:
+  hexagonal-queue-network:
+    driver: bridge
