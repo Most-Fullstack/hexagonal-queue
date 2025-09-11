@@ -9,6 +9,7 @@ import (
 type QueuePort interface {
 	// Producer operations
 	PublishTransaction(ctx context.Context, request models.TransactionRequest) (*models.TransactionResponse, error)
+	PublishTransactionFireAndForget(ctx context.Context, request models.TransactionRequest) error
 	PublishMessage(ctx context.Context, queueName string, message interface{}) error
 
 	// Consumer operations

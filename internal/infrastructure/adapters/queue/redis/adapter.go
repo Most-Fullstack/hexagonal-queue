@@ -181,6 +181,10 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 	return &response, nil
 }
 
+func (a *Adapter) PublishTransactionFireAndForget(ctx context.Context, request models.TransactionRequest) error {
+	return nil
+}
+
 // PublishMessage publishes a message to a specific Redis list/stream
 func (a *Adapter) PublishMessage(ctx context.Context, queueName string, message interface{}) error {
 	if a.closed {

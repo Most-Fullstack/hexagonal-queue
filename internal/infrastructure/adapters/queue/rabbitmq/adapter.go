@@ -113,7 +113,7 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 	responseQueue, err := a.channel.QueueDeclare(
 		"",    // name (auto-generated)
 		false, // durable
-		false, // delete when unused
+		true,  // delete when unused
 		true,  // exclusive
 		false, // no-wait
 		nil,   // arguments
@@ -122,10 +122,15 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 		return nil, fmt.Errorf("failed to declare response queue: %w", err)
 	}
 
-	// Consume responses
+	// 🎯 CRITICAL: Generate unique consumer tag for each RPC call
+	consumerTag := fmt.Sprintf("temp-consumer-%s-%d",
+		utils.GenerateTransactionID(request.Username),
+		time.Now().UnixNano())
+
+	// 🎯 Use the unique consumer tag (NOT responseQueue.Name)
 	msgs, err := a.channel.Consume(
-		responseQueue.Name, // queue
-		responseQueue.Name, // consumer
+		responseQueue.Name, // queue name
+		consumerTag,        // consumer tag ← UNIQUE TAG!
 		true,               // auto-ack
 		false,              // exclusive
 		false,              // no-local
@@ -135,6 +140,13 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 	if err != nil {
 		return nil, fmt.Errorf("failed to register consumer: %w", err)
 	}
+
+	// 🎯 Clean up using the SAME unique consumer tag
+	defer func() {
+		if cancelErr := a.channel.Cancel(consumerTag, false); cancelErr != nil {
+			log.Printf("Warning: Failed to cancel consumer %s: %v", consumerTag, cancelErr)
+		}
+	}()
 
 	// Generate correlation ID
 	corrID := utils.GenerateTransactionID(request.Username)
@@ -183,6 +195,36 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 	}
 
 	return nil, fmt.Errorf("no response received")
+}
+
+// Add this to adapter.go for high-volume testing
+func (a *Adapter) PublishTransactionFireAndForget(ctx context.Context, request models.TransactionRequest) error {
+	if a.closed {
+		return fmt.Errorf("connection is closed")
+	}
+
+	// Marshal request
+	body, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Simple publish - NO RPC overhead
+	err = a.channel.PublishWithContext(
+		ctx,
+		a.config.Exchange,   // exchange
+		a.config.RoutingKey, // routing key
+		false,               // mandatory
+		false,               // immediate
+		amqp.Publishing{
+			Type:        strings.ToUpper(request.Action),
+			ContentType: "application/json",
+			Body:        body,
+			Timestamp:   time.Now(),
+		},
+	)
+
+	return err
 }
 
 // PublishMessage publishes a message to a specific queue

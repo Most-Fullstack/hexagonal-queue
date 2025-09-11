@@ -89,14 +89,13 @@ func (h *WalletHandler) QueueDepositHandler(c *gin.Context) {
 
 func (h *WalletHandler) QueueTestRabbitmqDepositHandler(c *gin.Context) {
 	const (
-		numMessages = 100000 // Total messages to send
-		workerPool  = 3      // Increase workers!
-		batchSize   = 100    // Messages per batch
+		numMessages  = 10000             // Total messages to send
+		workerPool   = 5                 // Increase workers!
+		batchSize    = 1000              // Messages per batch
+		testDuration = 600 * time.Second // Reduce time, increase workers
+		messageRate  = 100               // Increase rate
+		batchDelay   = 3 * time.Second   // Batch delay
 	)
-
-	// Get test parameters
-	testDuration := 600 * time.Second // Reduce time, increase workers
-	messageRate := 100                // Increase rate
 
 	start := time.Now()
 
@@ -125,7 +124,7 @@ func (h *WalletHandler) QueueTestRabbitmqDepositHandler(c *gin.Context) {
 	go h.monitorQueueDepth(metrics, done)
 
 	// 3. Send jobs in batches with rate limiting
-	go h.sendJobsBatched(jobs, numMessages, batchSize, messageRate, testDuration, done)
+	go h.sendJobsBatched(jobs, numMessages, batchSize, messageRate, testDuration, batchDelay, done)
 
 	// 4. Wait for ALL jobs to be sent
 	select {

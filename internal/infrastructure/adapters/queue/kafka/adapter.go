@@ -202,6 +202,10 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 	}
 }
 
+func (a *Adapter) PublishTransactionFireAndForget(ctx context.Context, request models.TransactionRequest) error {
+	return nil
+}
+
 // PublishMessage publishes a message to a specific topic
 func (a *Adapter) PublishMessage(ctx context.Context, topic string, message interface{}) error {
 	if a.closed {

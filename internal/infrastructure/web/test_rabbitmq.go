@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hexagonal-queue/internal/domain/models"
+	"hexagonal-queue/pkg/utils"
 	"net/http"
 	"strings"
 	"sync"
@@ -77,6 +78,7 @@ func (h *WalletHandler) monitorQueueDepth(metrics *RabbitMQLoadMetrics, done cha
 	// consecutive_errors := 0
 	lastDepth := -1 // Track last depth to avoid spam
 	lastLogTime := time.Now()
+	maxObservedDepth := 0
 
 	for {
 		select {
@@ -86,31 +88,27 @@ func (h *WalletHandler) monitorQueueDepth(metrics *RabbitMQLoadMetrics, done cha
 		case <-ticker.C:
 			depth := h.getRabbitMQQueueDepth("wallet_queue")
 
-			// if depth == -1 {
-			// 	consecutive_errors++
-			// 	if consecutive_errors == 1 { // Only log first error
-			// 		fmt.Printf("⚠️  Cannot get queue depth from RabbitMQ Management API\n")
-			// 	}
-			// 	continue
-			// }
-
-			// consecutive_errors = 0
+			if depth > maxObservedDepth {
+				maxObservedDepth = depth
+			}
 
 			metrics.Lock()
+			publishedCount := int(metrics.PublishedCount)
+			errorCount := int(metrics.PublishErrors)
 			metrics.QueueDepthSamples = append(metrics.QueueDepthSamples, depth)
 			metrics.Unlock()
 
-			// Only log if depth changed significantly
-			if lastDepth == -1 || time.Since(lastLogTime) > 1*time.Second {
-				status := "🟢" // Green - healthy
-				if depth > 100 {
-					status = "🔴" // Red - backing up
-				} else if depth > 50 {
-					status = "🟡" // Yellow - building up
-				}
+			// Only log if depth changed significantly or every 30 seconds
+			shouldLog := lastDepth == -1 ||
+				utils.Abs(depth-lastDepth) > 2 ||
+				time.Since(lastLogTime) > 30*time.Second
 
-				fmt.Printf("%s Queue: %d msgs | Published: %d | Errors: %d\n",
-					status, depth, metrics.PublishedCount, metrics.PublishErrors)
+			if shouldLog {
+				status, capacityInfo := h.getQueueHealthStatus(depth, maxObservedDepth, publishedCount)
+
+				fmt.Printf("%s Queue: %d msgs (%s) | Published: %d | Errors: %d | Peak: %d\n",
+					status, depth, capacityInfo, publishedCount, errorCount, maxObservedDepth)
+
 				lastDepth = depth
 				lastLogTime = time.Now()
 			}
@@ -140,6 +138,57 @@ func (h *WalletHandler) getRabbitMQQueueDepth(queueName string) int {
 
 	json.NewDecoder(resp.Body).Decode(&queueInfo)
 	return queueInfo.Messages
+}
+
+func (h *WalletHandler) getQueueHealthStatus(currentDepth, maxDepth int, publishedCount int) (string, string) {
+	// Always use realistic RabbitMQ capacity as baseline
+	estimatedCapacity := h.estimateRabbitMQCapacity()
+	usagePercent := (float64(currentDepth) / float64(estimatedCapacity)) * 100
+
+	var capacityInfo string
+	if currentDepth > maxDepth {
+		capacityInfo = fmt.Sprintf("%.3f%% (NEW PEAK!)", usagePercent)
+	} else {
+		capacityInfo = fmt.Sprintf("%.3f%%", usagePercent)
+	}
+
+	// Status based on realistic percentage thresholds
+	var status string
+	switch {
+	case usagePercent >= 90.0: // 90%+ of 3.4M = 3.06M+ msgs
+		status = "🚨" // Critical - Near capacity!
+	case usagePercent >= 80.0: // 80%+ of 3.4M = 2.72M+ msgs
+		status = "🔴" // High - Action needed
+	case usagePercent >= 60.0: // 60%+ of 3.4M = 2.04M+ msgs
+		status = "🟡" // Warning - Monitor closely
+	case usagePercent >= 40.0: // 40%+ of 3.4M = 1.36M+ msgs
+		status = "🟠" // Caution - Elevated usage
+	case usagePercent >= 20.0: // 20%+ of 3.4M = 680K+ msgs
+		status = "🔵" // Moderate - Normal load
+	default:
+		status = "🟢" // Healthy - Low usage
+	}
+
+	return status, capacityInfo
+}
+
+// Add this helper method
+func (h *WalletHandler) estimateRabbitMQCapacity() int {
+	// Estimate based on realistic RabbitMQ memory limits
+	// Assume 8GB system, 40% memory limit = ~3.2GB available
+	// Average message size ~500 bytes
+
+	const (
+		assumedRAM          = 8 * 1024 * 1024 * 1024 // 8GB in bytes
+		rabbitMemoryPercent = 0.4                    // 40% default limit
+		avgMessageSize      = 500                    // bytes per message
+	)
+
+	availableMemory := (float64(assumedRAM) * rabbitMemoryPercent)
+	estimatedCapacity := availableMemory / avgMessageSize
+
+	// Conservative estimate (use 50% of theoretical max)
+	return int(estimatedCapacity / 2) // ~3.2 million messages
 }
 
 type RabbitMQLoadStats struct {
@@ -224,6 +273,9 @@ func (h *WalletHandler) publishWorker(ctx context.Context, jobs <-chan int, metr
 		_, err := h.queuePort.PublishTransaction(ctx, request)
 		latency := time.Since(publishStart)
 
+		// err := h.queuePort.PublishTransactionFireAndForget(ctx, request)
+		// latency := time.Since(publishStart)
+
 		metrics.Lock()
 		if err != nil {
 			metrics.PublishErrors++
@@ -237,8 +289,24 @@ func (h *WalletHandler) publishWorker(ctx context.Context, jobs <-chan int, metr
 				} else if strings.Contains(err.Error(), "no response") {
 					errorType = "No Response"
 				}
-				fmt.Printf("🚨 %s errors: %d (type: %s)\n",
-					errorType, metrics.PublishErrors, errorType)
+
+				switch errorType {
+				case "Connection Limit":
+					fmt.Printf("🚨 [1] Connection Limit errors: %d (type: %s)\n",
+						metrics.PublishErrors, errorType)
+				case "Timeout":
+					fmt.Printf("🚨 [2] Timeout errors: %d (type: %s)\n",
+						metrics.PublishErrors, errorType)
+				case "No Response":
+					fmt.Printf("🚨 [3] No Response errors: %d (type: %s)\n",
+						metrics.PublishErrors, errorType)
+				default:
+					fmt.Println("--------------------------------")
+					fmt.Printf("🚨 🚨 🚨 [99] Unknown errors: %d (type: %s) error: %s\n",
+						metrics.PublishErrors, errorType, err.Error())
+					fmt.Println("--------------------------------")
+				}
+
 			}
 		} else {
 			metrics.PublishedCount++
@@ -248,9 +316,8 @@ func (h *WalletHandler) publishWorker(ctx context.Context, jobs <-chan int, metr
 	}
 }
 
-func (h *WalletHandler) sendJobsBatched(jobs chan<- int, numMessages, batchSize, messageRate int, duration time.Duration, done chan bool) {
+func (h *WalletHandler) sendJobsBatched(jobs chan<- int, numMessages, batchSize, messageRate int, duration time.Duration, batchDelay time.Duration, done chan bool) {
 	// batchDelay := time.Duration(float64(batchSize)/float64(messageRate)) * time.Second
-	batchDelay := 2 * time.Second
 	timeout := time.After(duration)
 
 	messagesSent := 0
