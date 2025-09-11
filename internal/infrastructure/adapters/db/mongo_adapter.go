@@ -141,8 +141,6 @@ func (m *MongoAdapter) GetUserByUsername(ctx context.Context, username, parentTo
 		"status":       1,
 	}
 
-	fmt.Printf("filter: %v\n", filter)
-
 	var user models.User
 	err := collection.FindOne(ctx, filter).Decode(&user)
 	if err != nil {

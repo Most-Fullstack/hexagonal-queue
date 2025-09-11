@@ -113,7 +113,7 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 	responseQueue, err := a.channel.QueueDeclare(
 		"",    // name (auto-generated)
 		false, // durable
-		true,  // delete when unused
+		false, // delete when unused
 		true,  // exclusive
 		false, // no-wait
 		nil,   // arguments

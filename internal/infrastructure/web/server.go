@@ -68,6 +68,7 @@ func (s *Server) setupRoutes() *gin.Engine {
 		test := v1.Group("/test")
 		{
 			test.POST("/queue", s.walletHandler.QueueTestHandler)
+			test.POST("/queue/rabbitmq/deposit", s.walletHandler.QueueTestRabbitmqDepositHandler)
 		}
 	}
 

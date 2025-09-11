@@ -1,8 +1,11 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 
 	"hexagonal-queue/internal/application/ports"
 	"hexagonal-queue/internal/application/usecases"
@@ -82,6 +85,91 @@ func (h *WalletHandler) QueueDepositHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func (h *WalletHandler) QueueTestRabbitmqDepositHandler(c *gin.Context) {
+	const (
+		numMessages = 100000 // Total messages to send
+		workerPool  = 3      // Increase workers!
+		batchSize   = 100    // Messages per batch
+	)
+
+	// Get test parameters
+	testDuration := 600 * time.Second // Reduce time, increase workers
+	messageRate := 100                // Increase rate
+
+	start := time.Now()
+
+	// Use buffered channels for better performance
+	jobs := make(chan int, numMessages)
+	done := make(chan bool, 1)
+
+	// Metrics collection
+	metrics := &RabbitMQLoadMetrics{
+		PublishedCount:    0,
+		PublishErrors:     0,
+		ConsumedCount:     0,
+		QueueDepthSamples: make([]int, 0, int(testDuration.Seconds())),
+		StartTime:         start,
+		PublishLatencies:  make([]time.Duration, 0, numMessages),
+	}
+
+	// 1. Start worker pool for publishing
+	var wg sync.WaitGroup
+	for w := 0; w < workerPool; w++ {
+		wg.Add(1)
+		go h.publishWorker(c.Request.Context(), jobs, metrics, &wg)
+	}
+
+	// 2. Start queue depth monitoring
+	go h.monitorQueueDepth(metrics, done)
+
+	// 3. Send jobs in batches with rate limiting
+	go h.sendJobsBatched(jobs, numMessages, batchSize, messageRate, testDuration, done)
+
+	// 4. Wait for ALL jobs to be sent
+	select {
+	case <-done:
+		fmt.Printf("📤 All %d messages queued. Waiting for workers to finish...\n", numMessages)
+	case <-time.After(testDuration + 10*time.Second):
+		fmt.Printf("⏰ Publishing timed out. Waiting for workers to finish...\n")
+		close(done)
+	}
+
+	// 5. CRITICAL: Wait for ALL workers to complete processing
+	close(jobs) // Signal workers to stop
+	wg.Wait()   // Wait for all workers to finish
+
+	// 6. Stop monitoring
+	close(done)
+
+	// 7. Calculate final metrics
+	finalStats := h.calculateRabbitMQStats(metrics)
+
+	// 8. Show COMPLETE results
+	fmt.Printf("\n🏁 FINAL RESULTS:\n")
+	fmt.Printf("📊 Total Messages: %d\n", numMessages)
+	fmt.Printf("✅ Successful: %d (%.1f%%)\n", finalStats.MessagesPublished,
+		float64(finalStats.MessagesPublished)/float64(numMessages)*100)
+	fmt.Printf("❌ Failed: %d (%.1f%%)\n", finalStats.PublishErrors,
+		float64(finalStats.PublishErrors)/float64(numMessages)*100)
+	fmt.Printf("⏱️  Duration: %s\n", finalStats.Duration)
+	fmt.Printf("🚀 Rate: %.1f msg/sec\n", finalStats.PublishRate)
+	fmt.Printf("📈 Avg Latency: %v\n", finalStats.AvgPublishLatency)
+	fmt.Printf("📊 Queue Depth: avg=%.1f, max=%d\n",
+		finalStats.AvgQueueDepth, finalStats.MaxQueueDepth)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "RabbitMQ Load Test Results",
+		"config": gin.H{
+			"total_messages": numMessages,
+			"worker_pool":    workerPool,
+			"batch_size":     batchSize,
+			"target_rate":    messageRate,
+			"test_duration":  testDuration.String(),
+		},
+		"stats": finalStats,
+	})
 }
 
 // WithdrawHandler handles withdraw requests

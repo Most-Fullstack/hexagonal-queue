@@ -45,7 +45,7 @@ func (uc *WalletUseCase) SetCacheRepository(cacheRepo CacheRepository) {
 
 // HandleDeposit processes deposit transactions
 func (uc *WalletUseCase) HandleDeposit(ctx context.Context, request models.TransactionRequest) models.TransactionResponse {
-	log.Printf("Processing deposit: %s -> %s, amount: %.2f", request.ParentToken, request.Username, request.Amount)
+	// log.Printf("Processing deposit: %s -> %s, amount: %.2f", request.ParentToken, request.Username, request.Amount)
 
 	// Validate request
 	if err := uc.walletService.ValidateDepositRequest(request); err != nil {
@@ -84,7 +84,7 @@ func (uc *WalletUseCase) HandleDeposit(ctx context.Context, request models.Trans
 
 // HandleWithdraw processes withdraw transactions
 func (uc *WalletUseCase) HandleWithdraw(ctx context.Context, request models.TransactionRequest) models.TransactionResponse {
-	log.Printf("Processing withdraw: %s -> %s, amount: %.2f", request.ParentToken, request.Username, request.Amount)
+	// log.Printf("Processing withdraw: %s -> %s, amount: %.2f", request.ParentToken, request.Username, request.Amount)
 
 	// Get current balance first to validate
 	accountBalance, err := uc.walletRepo.GetAccountBalance(ctx, request.Username, request.ParentToken)
