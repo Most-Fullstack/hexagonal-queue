@@ -2,19 +2,20 @@ package main
 
 import (
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"hexagonal-queue/internal/application/usecases"
 	"hexagonal-queue/internal/infrastructure/adapters/db"
 	"hexagonal-queue/internal/infrastructure/adapters/queue"
 	"hexagonal-queue/internal/infrastructure/config"
-	"hexagonal-queue/internal/infrastructure/web"
 
 	"github.com/joho/godotenv"
 )
 
 func main() {
-
-	// Load environment variables from .env file (Add these 3 lines)
+	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: Could not load .env file: %v", err)
 	}
@@ -32,7 +33,7 @@ func main() {
 	}
 	defer dbAdapter.Close()
 
-	// Initialize queue adapter using factory
+	// Initialize queue adapter
 	queueFactory := queue.NewQueueFactory(cfg)
 	queueAdapter, err := queueFactory.CreateQueueAdapter(cfg.Queue.Provider)
 	if err != nil {
@@ -43,19 +44,20 @@ func main() {
 	// Initialize use cases
 	walletUseCase := usecases.NewWalletUseCase(dbAdapter, queueAdapter)
 
-	// Initialize web server
-	webServer := web.NewServer(cfg.Server.Port, walletUseCase, queueAdapter)
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start queue consumer
+	// Start consumer in goroutine
 	go func() {
+		log.Printf("🚀 Starting %s consumer...", cfg.Queue.Provider)
 		if err := queueAdapter.StartConsumer(walletUseCase); err != nil {
-			log.Printf("Queue consumer error: %v", err)
+			log.Printf("Consumer error: %v", err)
 		}
 	}()
 
-	// Start web server
-	log.Printf("Starting server on port %s with queue provider: %s", cfg.Server.Port, cfg.Queue.Provider)
-	if err := webServer.Start(); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
-	}
+	// Wait for shutdown signal
+	<-sigChan
+	log.Println("🛑 Shutdown signal received, stopping consumer...")
+	log.Println("✅ Consumer stopped gracefully")
 }

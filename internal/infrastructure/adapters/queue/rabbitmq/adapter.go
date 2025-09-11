@@ -122,15 +122,13 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 		return nil, fmt.Errorf("failed to declare response queue: %w", err)
 	}
 
-	// 🎯 CRITICAL: Generate unique consumer tag for each RPC call
 	consumerTag := fmt.Sprintf("temp-consumer-%s-%d",
 		utils.GenerateTransactionID(request.Username),
 		time.Now().UnixNano())
 
-	// 🎯 Use the unique consumer tag (NOT responseQueue.Name)
 	msgs, err := a.channel.Consume(
 		responseQueue.Name, // queue name
-		consumerTag,        // consumer tag ← UNIQUE TAG!
+		consumerTag,        // consumer tag
 		true,               // auto-ack
 		false,              // exclusive
 		false,              // no-local
@@ -141,7 +139,6 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 		return nil, fmt.Errorf("failed to register consumer: %w", err)
 	}
 
-	// 🎯 Clean up using the SAME unique consumer tag
 	defer func() {
 		if cancelErr := a.channel.Cancel(consumerTag, false); cancelErr != nil {
 			log.Printf("Warning: Failed to cancel consumer %s: %v", consumerTag, cancelErr)
@@ -276,6 +273,8 @@ func (a *Adapter) StartConsumer(handler ports.TransactionHandler) error {
 	go func() {
 		for msg := range msgs {
 			a.handleMessage(msg, handler)
+
+			fmt.Printf("Received message: %s\n", msg.ConsumerTag)
 		}
 	}()
 
