@@ -75,3 +75,7 @@ type CreateMemberRequest struct {
 	DateTime time.Time `json:"date_time"`
 	Username string    `json:"username"`
 }
+
+
+
+

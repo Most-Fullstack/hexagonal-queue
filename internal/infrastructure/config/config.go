@@ -299,3 +299,7 @@ func (c *Config) PrintConfig() {
 	fmt.Printf("Environment: %s\n", getEnv("GO_ENV", "development"))
 	fmt.Printf("====================\n")
 }
+
+
+
+

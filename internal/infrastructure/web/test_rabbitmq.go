@@ -270,11 +270,11 @@ func (h *WalletHandler) publishWorker(ctx context.Context, jobs <-chan int, metr
 			Description: fmt.Sprintf("load-test-%d", jobID),
 		}
 
-		_, err := h.queuePort.PublishTransaction(ctx, request)
-		latency := time.Since(publishStart)
-
-		// err := h.queuePort.PublishTransactionFireAndForget(ctx, request)
+		// _, err := h.queuePort.PublishTransaction(ctx, request)
 		// latency := time.Since(publishStart)
+
+		err := h.queuePort.PublishTransactionFireAndForget(ctx, request)
+		latency := time.Since(publishStart)
 
 		metrics.Lock()
 		if err != nil {

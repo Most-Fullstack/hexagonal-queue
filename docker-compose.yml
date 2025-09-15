@@ -238,3 +238,7 @@ volumes:
 networks:
   hexagonal-queue-network:
     driver: bridge
+
+
+
+

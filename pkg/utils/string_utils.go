@@ -64,3 +64,7 @@ func MaskSensitiveData(data string) string {
 
 	return data[:2] + strings.Repeat("*", len(data)-4) + data[len(data)-2:]
 }
+
+
+
+

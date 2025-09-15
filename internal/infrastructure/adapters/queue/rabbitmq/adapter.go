@@ -122,9 +122,8 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 		return nil, fmt.Errorf("failed to declare response queue: %w", err)
 	}
 
-	consumerTag := fmt.Sprintf("temp-consumer-%s-%d",
-		utils.GenerateTransactionID(request.Username),
-		time.Now().UnixNano())
+	// consumerTag := fmt.Sprintf("temp-consumer-%s-%s", utils.GenerateUUID(), utils.GenerateTransactionID(request.Username))
+	consumerTag := fmt.Sprintf("temp-consumer-%s", utils.GenerateUUID())
 
 	msgs, err := a.channel.Consume(
 		responseQueue.Name, // queue name
@@ -139,14 +138,16 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 		return nil, fmt.Errorf("failed to register consumer: %w", err)
 	}
 
+	corrID := utils.GenerateTransactionID(request.Username)
+
 	defer func() {
+		fmt.Println("do consumer close: ", corrID)
 		if cancelErr := a.channel.Cancel(consumerTag, false); cancelErr != nil {
 			log.Printf("Warning: Failed to cancel consumer %s: %v", consumerTag, cancelErr)
 		}
 	}()
 
 	// Generate correlation ID
-	corrID := utils.GenerateTransactionID(request.Username)
 
 	// Marshal request
 	body, err := json.Marshal(request)
@@ -214,10 +215,11 @@ func (a *Adapter) PublishTransactionFireAndForget(ctx context.Context, request m
 		false,               // mandatory
 		false,               // immediate
 		amqp.Publishing{
-			Type:        strings.ToUpper(request.Action),
-			ContentType: "application/json",
-			Body:        body,
-			Timestamp:   time.Now(),
+			Type:          strings.ToUpper(request.Action),
+			ContentType:   "application/json",
+			Body:          body,
+			Timestamp:     time.Now(),
+			CorrelationId: utils.GenerateUUID(),
 		},
 	)
 
@@ -242,9 +244,10 @@ func (a *Adapter) PublishMessage(ctx context.Context, queueName string, message 
 		false,     // mandatory
 		false,     // immediate
 		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
-			Timestamp:   time.Now(),
+			ContentType:   "application/json",
+			Body:          body,
+			Timestamp:     time.Now(),
+			CorrelationId: utils.GenerateUUID(),
 		},
 	)
 }
@@ -273,8 +276,6 @@ func (a *Adapter) StartConsumer(handler ports.TransactionHandler) error {
 	go func() {
 		for msg := range msgs {
 			a.handleMessage(msg, handler)
-
-			fmt.Printf("Received message: %s\n", msg.ConsumerTag)
 		}
 	}()
 
@@ -294,6 +295,8 @@ func (a *Adapter) handleMessage(msg amqp.Delivery, handler ports.TransactionHand
 	}
 
 	var response models.TransactionResponse
+
+	fmt.Printf("processing message: %s\n", msg.CorrelationId)
 
 	// Handle based on message type
 	switch strings.ToUpper(msg.Type) {
