@@ -50,22 +50,25 @@ A microservice implementing hexagonal architecture (ports and adapters pattern) 
 ## 📊 Load Testing Capabilities
 
 ### High-Volume Testing
-- **Support**: Up to 100,000+ messages
-- **Batch Processing**: Configurable batch sizes (25-1000 messages)
-- **Rate Limiting**: Prevents connection exhaustion
-- **Worker Pools**: Concurrent processing (1-10 workers)
+- **Support**: Up to 1,000 messages (configurable)
+- **Batch Processing**: Configurable batch sizes (default: 10,000 messages per batch)
+- **Rate Limiting**: Prevents connection exhaustion with batch delays
+- **Worker Pools**: Concurrent processing (default: 2 workers)
 - **Real-time Monitoring**: Queue depth and latency tracking
 
 ### Test Endpoints
 ```bash
-# RabbitMQ Load Test (100K messages)
+# RabbitMQ Load Test (1K messages with 2 workers)
 POST /api/v1/test/queue/rabbitmq/deposit
 
-# Kafka Performance Test  
-POST /api/v1/test/queue/kafka/deposit
-
-# Redis Speed Test
-POST /api/v1/test/queue/redis/deposit
+# Generic Queue Test (configurable provider)
+POST /api/v1/test/queue
+{
+  "provider": "rabbitmq",
+  "username": "testuser",
+  "action": "deposit",
+  "amount": 100.0
+}
 
 # Queue Health Monitoring
 GET /health/queues
@@ -86,9 +89,12 @@ GET /health/queues
 - `POST /api/v1/wallet/balance` - Check balance
 - `POST /api/v1/wallet/balances` - Check multiple balances
 - `POST /api/v1/wallet/member` - Create member
+- `GET /api/v1/wallet/history/:username` - Get transaction history
+- `POST /api/v1/wallet/queue/deposit` - Queue-based deposit (fire-and-forget)
 
-### Testing
+### Testing & Load Testing
 - `POST /api/v1/test/queue` - Test queue operations
+- `POST /api/v1/test/queue/rabbitmq/deposit` - RabbitMQ load test (1K messages)
 
 ### Health & Monitoring
 - `GET /health` - Service health check
@@ -212,16 +218,15 @@ REDIS_DB=0
 
 ### Load Test Configuration
 ```go
-// Configurable in handlers.go
+// Current configuration in handlers.go
 const (
-    numMessages = 100000  // Total messages to send
-    workerPool  = 3       // Concurrent workers
-    batchSize   = 100     // Messages per batch
+    numMessages  = 1000              // Total messages to send
+    workerPool   = 2                 // Concurrent workers
+    batchSize    = 10000             // Messages per batch
+    testDuration = 600 * time.Second // Max test time (10 minutes)
+    messageRate  = 100               // Target msg/sec
+    batchDelay   = 1 * time.Second   // Delay between batches
 )
-
-// Timing
-testDuration := 600 * time.Second  // Max test time
-messageRate := 100                 // Target msg/sec
 ```
 
 ## 🐳 Docker Setup
@@ -257,50 +262,235 @@ docker-compose up -d mongodb rabbitmq
 # Create a member
 curl -X POST http://localhost:8080/api/v1/wallet/member \
   -H "Content-Type: application/json" \
-  -H "Authorization: admin" \
+  -H "Authorization: admin-parent-token" \
   -d '{
-    "username": "testuser",
+    "parent_token": "admin-parent-token",
     "token": "user-token-123",
-    "type_member": "member"
+    "username": "testuser",
+    "action": "ADD_MEMBER",
+    "type_name": "ADD_MEMBER",
+    "channel": "web-api",
+    "description": "New member registration"
   }'
+
+# Response:
+{
+  "status": 201,
+  "message": "Member created successfully",
+  "data": {
+    "username": "testuser",
+    "parent_token": "admin-parent-token",
+    "token": "user-token-123"
+  }
+}
 
 # Deposit money
 curl -X POST http://localhost:8080/api/v1/wallet/deposit \
   -H "Content-Type: application/json" \
-  -H "Authorization: admin" \
+  -H "Authorization: admin-parent-token" \
   -d '{
-    "username": "testuser",
+    "parent_token": "admin-parent-token",
     "token": "user-token-123",
+    "username": "testuser",
+    "action": "DEPOSIT",
     "type_name": "DEPOSIT",
     "amount": 100.50,
-    "channel": "api",
-    "description": "Load test deposit"
+    "channel": "web-api",
+    "description": "Initial deposit"
   }'
+
+# Success Response:
+{
+  "status": 200,
+  "message": "Deposit successful",
+  "data": {
+    "username": "testuser",
+    "current_balance": 100.50,
+    "before_balance": 0.00,
+    "after_balance": 100.50
+  }
+}
+
+# Withdraw money
+curl -X POST http://localhost:8080/api/v1/wallet/withdraw \
+  -H "Content-Type: application/json" \
+  -H "Authorization: admin-parent-token" \
+  -d '{
+    "parent_token": "admin-parent-token",
+    "token": "user-token-123",
+    "username": "testuser",
+    "action": "WITHDRAW",
+    "type_name": "WITHDRAW",
+    "amount": 25.00,
+    "channel": "web-api",
+    "description": "ATM withdrawal"
+  }'
+
+# Success Response:
+{
+  "status": 200,
+  "message": "Withdrawal successful",
+  "data": {
+    "username": "testuser",
+    "current_balance": 75.50,
+    "before_balance": 100.50,
+    "after_balance": 75.50
+  }
+}
 
 # Check balance
 curl -X POST http://localhost:8080/api/v1/wallet/balance \
   -H "Content-Type: application/json" \
-  -H "Authorization: admin" \
+  -H "Authorization: admin-parent-token" \
   -d '{
     "username": "testuser"
   }'
+
+# Response:
+{
+  "status": 200,
+  "message": "Balance retrieved successfully",
+  "data": {
+    "username": "testuser",
+    "current_balance": 75.50
+  }
+}
+
+# Check multiple balances
+curl -X POST http://localhost:8080/api/v1/wallet/balances \
+  -H "Content-Type: application/json" \
+  -H "Authorization: admin-parent-token" \
+  -d '{
+    "usernames": ["testuser", "user2", "user3"]
+  }'
+
+# Get transaction history
+curl -X GET "http://localhost:8080/api/v1/wallet/history/testuser?limit=5" \
+  -H "Authorization: admin-parent-token"
+
+# Response:
+{
+  "status": 200,
+  "message": "Success",
+  "data": {
+    "username": "testuser",
+    "limit": 5,
+    "transactions": []
+  }
+}
 ```
 
 ### Load Testing
 ```bash
-# RabbitMQ load test (100K messages)
+# RabbitMQ load test (1K messages with 2 workers)
 curl -X POST http://localhost:8080/api/v1/test/queue/rabbitmq/deposit
 
-# Expected output:
-# 📤 Queued: 100/100000 messages (0.1%)
-# 📤 Queued: 200/100000 messages (0.2%)
+# Expected Console Output:
+# 📤 Queued: 100/1000 messages (10.0%)
+# 📤 Queued: 200/1000 messages (20.0%)
 # ...
-# 🟢 Queue: 0 msgs | Published: 25847 | Errors: 23
+# 🟢 Queue: 2 msgs (0.000%) | Published: 847 | Errors: 3 | Peak: 15
+# 📤 All 1000 messages queued. Waiting for workers to finish...
 # 🏁 FINAL RESULTS:
-# ✅ Successful: 99,977 (99.98%)
-# ❌ Failed: 23 (0.02%)
-# 🚀 Rate: 1,547.2 msg/sec
-# ⏱️ Duration: 64.6s
+# 📊 Total Messages: 1000
+# ✅ Successful: 997 (99.7%)
+# ❌ Failed: 3 (0.3%)
+# ⏱️ Duration: 15.2s
+# 🚀 Rate: 65.6 msg/sec
+# 📈 Avg Latency: 23ms
+# 📊 Queue Depth: avg=1.2, max=15
+
+# JSON Response:
+{
+  "message": "RabbitMQ Load Test Results",
+  "config": {
+    "total_messages": 1000,
+    "worker_pool": 2,
+    "batch_size": 10000,
+    "target_rate": 100,
+    "test_duration": "10m0s"
+  },
+  "stats": {
+    "duration": "15.234s",
+    "messages_published": 997,
+    "publish_errors": 3,
+    "publish_rate_per_sec": 65.6,
+    "avg_publish_latency": "23ms",
+    "max_publish_latency": "145ms",
+    "avg_queue_depth": 1.2,
+    "max_queue_depth": 15,
+    "success_rate_percent": 99.7
+  }
+}
+
+# Generic queue test with configurable provider
+curl -X POST http://localhost:8080/api/v1/test/queue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "rabbitmq",
+    "username": "testuser",
+    "action": "deposit",
+    "amount": 50.0
+  }'
+
+# Response:
+{
+  "test_provider": "rabbitmq",
+  "test_action": "deposit",
+  "queue_response": {
+    "status": 200,
+    "message": "Deposit successful",
+    "data": {
+      "username": "testuser",
+      "current_balance": 125.50,
+      "before_balance": 75.50,
+      "after_balance": 125.50
+    }
+  }
+}
+```
+
+### Error Response Examples
+```bash
+# Missing Authorization Header (401)
+{
+  "status": 401,
+  "message": "Authorization header is required"
+}
+
+# Invalid Request Format (400)
+{
+  "status": 400,
+  "message": "Invalid request format",
+  "error": "Key: 'TransactionRequest.Username' Error:Field validation for 'Username' failed on the 'required' tag"
+}
+
+# Insufficient Balance (400)
+{
+  "status": 400,
+  "message": "Insufficient balance for withdrawal",
+  "data": {
+    "username": "testuser",
+    "current_balance": 25.00,
+    "requested_amount": 100.00
+  }
+}
+
+# User Not Found (404)
+{
+  "status": 404,
+  "message": "User not found",
+  "data": {
+    "username": "nonexistentuser"
+  }
+}
+
+# Queue Publishing Error (500)
+{
+  "status": 500,
+  "message": "Failed to publish transaction",
+  "error": "connection refused"
+}
 ```
 
 ### Queue Health Check
@@ -311,12 +501,38 @@ curl http://localhost:8080/health/queues
 # Response:
 {
   "status": "healthy",
-  "providers": {
-    "rabbitmq": "connected",
-    "kafka": "connected", 
-    "redis": "connected"
-  },
-  "active_provider": "rabbitmq"
+  "queues": {
+    "rabbitmq": {"status": "available"},
+    "kafka": {"status": "available"},
+    "redis": {"status": "available"}
+  }
+}
+
+# Service health check
+curl http://localhost:8080/health
+
+# Response:
+{
+  "status": "healthy",
+  "service": "hexagonal-queue-wallet",
+  "version": "1.0.0"
+}
+
+# Metrics endpoint
+curl http://localhost:8080/metrics
+
+# Response:
+{
+  "service": "hexagonal-queue-wallet",
+  "metrics": {
+    "total_transactions": 0,
+    "active_connections": 0,
+    "queue_health": {
+      "rabbitmq": "connected",
+      "kafka": "connected",
+      "redis": "connected"
+    }
+  }
 }
 ```
 
@@ -326,27 +542,58 @@ The service allows seamless switching between queue providers to compare perform
 
 ### Quick Provider Switch
 ```bash
-# Test RabbitMQ performance
+# Test RabbitMQ performance with load test
 QUEUE_PROVIDER=rabbitmq go run cmd/main.go
 curl -X POST http://localhost:8080/api/v1/test/queue/rabbitmq/deposit
 
-# Switch to Kafka
-QUEUE_PROVIDER=kafka go run cmd/main.go
-curl -X POST http://localhost:8080/api/v1/test/queue/kafka/deposit
+# Test different providers with generic endpoint
+curl -X POST http://localhost:8080/api/v1/test/queue \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "rabbitmq", "username": "testuser", "action": "deposit", "amount": 100.0}'
 
-# Try Redis
-QUEUE_PROVIDER=redis go run cmd/main.go
-curl -X POST http://localhost:8080/api/v1/test/queue/redis/deposit
+curl -X POST http://localhost:8080/api/v1/test/queue \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "kafka", "username": "testuser", "action": "deposit", "amount": 100.0}'
+
+curl -X POST http://localhost:8080/api/v1/test/queue \
+  -H "Content-Type: application/json" \
+  -d '{"provider": "redis", "username": "testuser", "action": "deposit", "amount": 100.0}'
+```
+
+### Queue-based Deposit (Fire-and-Forget)
+```bash
+# Direct queue deposit without waiting for response
+curl -X POST http://localhost:8080/api/v1/wallet/queue/deposit \
+  -H "Content-Type: application/json" \
+  -H "Authorization: admin-parent-token" \
+  -d '{
+    "parent_token": "admin-parent-token",
+    "token": "user-token-123",
+    "username": "testuser",
+    "action": "DEPOSIT",
+    "type_name": "DEPOSIT",
+    "amount": 50.0,
+    "channel": "async-api",
+    "description": "Async deposit via queue"
+  }'
+
+# Response (immediate):
+{
+  "message": "Transaction queued successfully",
+  "queue_id": "queue-tx-12345"
+}
 ```
 
 ### Performance Comparison Results
-Based on 100K message load tests:
+Based on current 1K message load tests with 2 workers:
 
-| Provider | Avg Throughput | Success Rate | Latency | Connection Model |
-|----------|----------------|--------------|---------|------------------|
-| **RabbitMQ** | 1,200-2,000 msg/sec | 99.8% | 150ms | RPC with temp queues |
-| **Kafka** | 8,000-12,000 msg/sec | 99.9% | 25ms | Producer/Consumer |
-| **Redis** | 3,000-5,000 msg/sec | 99.7% | 50ms | Streams |
+| Provider | Avg Throughput | Success Rate | Latency | Connection Model | Current Status |
+|----------|----------------|--------------|---------|------------------|----------------|
+| **RabbitMQ** | 50-100 msg/sec | 99.7% | 23ms | Fire-and-forget | ✅ Implemented |
+| **Kafka** | TBD | TBD | TBD | Producer/Consumer | 🚧 Available |
+| **Redis** | TBD | TBD | TBD | Streams | 🚧 Available |
+
+*Note: Current load testing is configured for 1,000 messages with 2 concurrent workers. Performance can be scaled by adjusting these parameters in the handlers configuration.*
 
 ## 💼 Business Logic (Based on Indo-Wallet-Service)
 
@@ -383,8 +630,7 @@ Based on 100K message load tests:
 ```bash
 GET /health                 # Overall service health
 GET /health/queues         # Queue provider connectivity  
-GET /metrics              # Prometheus-style metrics
-GET /api/v1/wallet/health # Wallet service specific health
+GET /metrics              # Service metrics
 ```
 
 ### Log Levels
@@ -398,11 +644,11 @@ LOG_LEVEL=error    # Error messages only
 ## 🧪 Load Testing Features
 
 ### Configurable Test Parameters
-- **Message Volume**: 1K to 100K+ messages
-- **Batch Sizes**: 25, 50, 100, 1000 messages per batch
-- **Worker Pools**: 1-10 concurrent workers
-- **Rate Limiting**: Prevents connection exhaustion
-- **Duration Limits**: Maximum test time controls
+- **Message Volume**: Currently 1K messages (configurable in code)
+- **Batch Sizes**: 10,000 messages per batch (configurable)
+- **Worker Pools**: 2 concurrent workers (configurable 1-10)
+- **Rate Limiting**: 100 msg/sec target rate with 1s batch delays
+- **Duration Limits**: 10 minutes maximum test time
 
 ### Test Outputs
 ```bash
