@@ -70,6 +70,7 @@ func (s *Server) setupRoutes() *gin.Engine {
 			test.POST("/queue", s.walletHandler.QueueTestHandler)
 			test.POST("/queue/rabbitmq/deposit", s.walletHandler.QueueTestRabbitmqDepositHandler)
 			test.GET("/kafka/load", gin.WrapF(s.walletHandler.KafkaLoadTest)) // เพิ่มบรรทัดนี้
+			test.POST("/queue/redis/deposit", s.walletHandler.testRedis)
 		}
 	}
 
