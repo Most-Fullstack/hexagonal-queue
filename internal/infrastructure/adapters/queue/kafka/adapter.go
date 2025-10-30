@@ -94,7 +94,7 @@ func (a *Adapter) setupReader(topic string) *kafka.Reader {
 		MinBytes:    10e3, // 10KB
 		MaxBytes:    10e6, // 10MB
 		MaxWait:     1 * time.Second,
-		StartOffset: kafka.LastOffset,
+		StartOffset: kafka.FirstOffset,
 	})
 }
 
@@ -203,6 +203,38 @@ func (a *Adapter) PublishTransaction(ctx context.Context, request models.Transac
 }
 
 func (a *Adapter) PublishTransactionFireAndForget(ctx context.Context, request models.TransactionRequest) error {
+	if a.closed {
+		return fmt.Errorf("connection is closed")
+	}
+
+	// Generate correlation ID
+	correlationID := utils.GenerateTransactionID(request.Username)
+
+	// Create message headers
+	headers := []kafka.Header{
+		{Key: "correlation_id", Value: []byte(correlationID)},
+		{Key: "type", Value: []byte(strings.ToUpper(request.Action))},
+		{Key: "timestamp", Value: []byte(fmt.Sprintf("%d", time.Now().Unix()))},
+	}
+
+	// Marshal request
+	body, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Publish message without waiting for response
+	message := kafka.Message{
+		Key:     []byte(request.Username),
+		Value:   body,
+		Headers: headers,
+		Time:    time.Now(),
+	}
+
+	if err := a.writer.WriteMessages(ctx, message); err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
+	}
+
 	return nil
 }
 
@@ -237,6 +269,7 @@ func (a *Adapter) PublishMessage(ctx context.Context, topic string, message inte
 
 // StartConsumer starts consuming messages from the topic
 func (a *Adapter) StartConsumer(handler ports.TransactionHandler) error {
+	fmt.Println("Starting Kafka consumer")
 	if a.closed {
 		return fmt.Errorf("connection is closed")
 	}
@@ -270,6 +303,7 @@ func (a *Adapter) consumeMessages() {
 		case <-a.consumer.ctx.Done():
 			return
 		default:
+			fmt.Println("Consuming message")
 			msg, err := a.consumer.reader.FetchMessage(a.consumer.ctx)
 			if err != nil {
 				if err == context.Canceled {

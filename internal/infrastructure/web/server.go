@@ -69,6 +69,7 @@ func (s *Server) setupRoutes() *gin.Engine {
 		{
 			test.POST("/queue", s.walletHandler.QueueTestHandler)
 			test.POST("/queue/rabbitmq/deposit", s.walletHandler.QueueTestRabbitmqDepositHandler)
+			test.GET("/kafka/load", gin.WrapF(s.walletHandler.KafkaLoadTest)) // เพิ่มบรรทัดนี้
 		}
 	}
 
@@ -118,11 +119,3 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("Shutting down HTTP server...")
 	return s.httpServer.Shutdown(ctx)
 }
-
-
-
-
-
-
-
-
